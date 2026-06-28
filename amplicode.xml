@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AmplicodePersistenceUnitSettings">
+    <persistence-units>
+      <persistence-unit moduleName="ural-auth-service" name="Default">
+        <packages>
+          <package value="ru.ural.auth" />
+        </packages>
+      </persistence-unit>
+      <persistence-unit moduleName="ural-auth-db" name="Default" />
+      <persistence-unit moduleName="ural-cargo-service" name="Default">
+        <packages>
+          <package value="ru.ural.cargo" />
+        </packages>
+      </persistence-unit>
+      <persistence-unit moduleName="ural-cargo-db" name="Default" />
+      <persistence-unit moduleName="ural-cars-service" name="Default">
+        <packages>
+          <package value="ru.ural.cars" />
+        </packages>
+      </persistence-unit>
+      <persistence-unit moduleName="ural-cars-db" name="Default" />
+      <persistence-unit moduleName="ural-contracts-service" name="Default">
+        <packages>
+          <package value="ru.ural.contracts" />
+        </packages>
+      </persistence-unit>
+      <persistence-unit moduleName="ural-contracts-db" name="Default" />
+      <persistence-unit moduleName="ural-files-service" name="Default">
+        <packages>
+          <package value="ru.ural.files" />
+        </packages>
+      </persistence-unit>
+      <persistence-unit moduleName="ural-files-db" name="Default" />
+      <persistence-unit moduleName="ural-db-starter" name="Default" />
+      <persistence-unit moduleName="ural-notifications-service" name="Default">
+        <packages>
+          <package value="ru.ural.notifications" />
+        </packages>
+      </persistence-unit>
+      <persistence-unit moduleName="ural-notifications-db" name="Default" />
+      <persistence-unit moduleName="ural-users-service" name="Default">
+        <packages>
+          <package value="ru.ural.users" />
+        </packages>
+      </persistence-unit>
+      <persistence-unit moduleName="ural-users-db" name="Default" />
+    </persistence-units>
+  </component>
+</project>

@@ -1,0 +1,384 @@
+x-service-build: &service-build
+  context: .
+  dockerfile: Dockerfile
+
+x-service-env: &service-env
+  SPRING_PROFILES_ACTIVE: dev
+  SPRING_DATASOURCE_URL: jdbc:postgresql://ural-postgres:5432/${POSTGRES_DB:-ural}
+  SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-postgres}
+  SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+  SPRING_KAFKA_BOOTSTRAP_SERVERS: ural-kafka:9092
+  KAFKA_BOOTSTRAP_SERVERS: ural-kafka:9092
+  PUBLIC_KEY: ${PUBLIC_KEY:-}
+  PRIVATE_KEY: ${PRIVATE_KEY:-}
+
+x-service-depends: &service-depends
+  ural-postgres:
+    condition: service_healthy
+  ural-kafka:
+    condition: service_healthy
+
+services:
+  ural-postgres:
+    image: postgres:16-alpine
+    container_name: ural-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ural}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "${POSTGRES_PORT:-10900}:5432"
+    volumes:
+      - ural-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  ural-kafka:
+    image: apache/kafka:3.7.0
+    container_name: ural-kafka
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@ural-kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://ural-kafka:9092,EXTERNAL://localhost:${KAFKA_PORT:-11009}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+    ports:
+      - "${KAFKA_PORT:-11009}:9094"
+    volumes:
+      - ural-kafka-data:/tmp/kraft-combined-logs
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+
+  ural-minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    container_name: ural-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-ural}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-uralpass}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - ural-minio-data:/data
+
+  ural-mailpit:
+    image: axllent/mailpit:v1.27
+    container_name: ural-mailpit
+    ports:
+      - "${MAIL_SMTP_PORT:-1025}:1025"
+      - "${MAIL_WEB_PORT:-8025}:8025"
+
+  ural-minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    container_name: ural-minio-init
+    depends_on:
+      ural-minio:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "until mc alias set ural http://ural-minio:9000 ${MINIO_ROOT_USER:-ural} ${MINIO_ROOT_PASSWORD:-uralpass}; do sleep 2; done
+      && mc mb --ignore-existing ural/${MINIO_BUCKET:-files}"
+
+  ural-auth:
+    image: ural-auth:dev
+    container_name: ural-auth
+    build:
+      <<: *service-build
+      args:
+        PROJECT_DIR: ural-auth
+        SERVICE_MODULE: ural-auth-service
+    environment:
+      <<: *service-env
+    depends_on:
+      ural-postgres:
+        condition: service_healthy
+    ports:
+      - "${AUTH_PORT:-10901}:10901"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:10901/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  ural-users:
+    image: ural-users:dev
+    container_name: ural-users
+    build:
+      <<: *service-build
+      args:
+        PROJECT_DIR: ural-users
+        SERVICE_MODULE: ural-users-service
+    environment:
+      <<: *service-env
+      AUTH_URL: http://ural-auth:10901/api/auth
+    depends_on:
+      <<: *service-depends
+      ural-auth:
+        condition: service_healthy
+    ports:
+      - "${USERS_PORT:-10903}:10903"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:10903/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  ural-gai:
+    image: ural-gai:dev
+    container_name: ural-gai
+    build:
+      <<: *service-build
+      args:
+        PROJECT_DIR: ural-gai
+        SERVICE_MODULE: ural-gai-service
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+    ports:
+      - "${GAI_PORT:-10908}:10908"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:10908/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  ural-cargo:
+    image: ural-cargo:dev
+    container_name: ural-cargo
+    build:
+      <<: *service-build
+      args:
+        PROJECT_DIR: ural-cargo
+        SERVICE_MODULE: ural-cargo-service
+    environment:
+      <<: *service-env
+    depends_on:
+      ural-postgres:
+        condition: service_healthy
+    ports:
+      - "${CARGO_PORT:-10905}:10905"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:10905/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  ural-cars:
+    image: ural-cars:dev
+    container_name: ural-cars
+    build:
+      <<: *service-build
+      args:
+        PROJECT_DIR: ural-cars
+        SERVICE_MODULE: ural-cars-service
+    environment:
+      <<: *service-env
+      AUTOCODE_BASE_URL: http://ural-gai:10908/api
+    depends_on:
+      <<: *service-depends
+      ural-gai:
+        condition: service_healthy
+    ports:
+      - "${CARS_PORT:-10904}:10904"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:10904/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  ural-files:
+    image: ural-files:dev
+    container_name: ural-files
+    build:
+      <<: *service-build
+      args:
+        PROJECT_DIR: ural-files
+        SERVICE_MODULE: ural-files-service
+    environment:
+      <<: *service-env
+      MINIO_URL: http://ural-minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-ural}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-uralpass}
+      MINIO_BUCKET: ${MINIO_BUCKET:-files}
+    depends_on:
+      ural-postgres:
+        condition: service_healthy
+      ural-minio:
+        condition: service_started
+      ural-minio-init:
+        condition: service_completed_successfully
+    ports:
+      - "${FILES_PORT:-10907}:10907"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:10907/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  ural-notifications:
+    image: ural-notifications:dev
+    container_name: ural-notifications
+    build:
+      <<: *service-build
+      args:
+        PROJECT_DIR: ural-notifications
+        SERVICE_MODULE: ural-notifications-service
+    environment:
+      <<: *service-env
+      SPRING_MAIL_HOST: ural-mailpit
+      SPRING_MAIL_PORT: 1025
+    depends_on:
+      <<: *service-depends
+      ural-mailpit:
+        condition: service_started
+    ports:
+      - "${NOTIFICATIONS_PORT:-10909}:10909"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:10909/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  ural-contracts:
+    image: ural-contracts:dev
+    container_name: ural-contracts
+    build:
+      <<: *service-build
+      args:
+        PROJECT_DIR: ural-contracts
+        SERVICE_MODULE: ural-contracts-service
+    environment:
+      <<: *service-env
+      CAR_URL: http://ural-cars:10904/api/cars
+      CARGO_URL: http://ural-cargo:10905/api/cargo
+      GRAPHHOPPER_API_KEY: ${GRAPHHOPPER_API_KEY:-}
+      GRAPHHOPPER_PROFILE: ${GRAPHHOPPER_PROFILE:-car}
+      GRAPHHOPPER_LOCALE: ${GRAPHHOPPER_LOCALE:-ru}
+    depends_on:
+      <<: *service-depends
+      ural-cars:
+        condition: service_healthy
+      ural-cargo:
+        condition: service_healthy
+    ports:
+      - "${CONTRACTS_PORT:-10906}:10906"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:10906/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  ural-ai:
+    image: ural-ai:dev
+    container_name: ural-ai
+    build:
+      <<: *service-build
+      args:
+        PROJECT_DIR: ural-ai
+        SERVICE_MODULE: ural-ai-service
+    environment:
+      <<: *service-env
+      FILES_SERVICE_BASE_URL: http://ural-files:10907
+      CARGO_SERVICE_BASE_URL: http://ural-cargo:10905
+      CARS_SERVICE_BASE_URL: http://ural-cars:10904
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+    depends_on:
+      <<: *service-depends
+      ural-files:
+        condition: service_healthy
+      ural-cargo:
+        condition: service_healthy
+      ural-cars:
+        condition: service_healthy
+    ports:
+      - "${AI_PORT:-10910}:10910"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:10910/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  ural-aggregator:
+    image: ural-aggregator:dev
+    container_name: ural-aggregator
+    build:
+      <<: *service-build
+      args:
+        PROJECT_DIR: ural-aggregator
+        SERVICE_MODULE: ural-aggregator-service
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      PUBLIC_KEY: ${PUBLIC_KEY:-}
+      PROXY_AI_URL: http://ural-ai:10910/api
+      PROXY_AUTH_URL: http://ural-auth:10901/api
+      PROXY_USERS_URL: http://ural-users:10903/api
+      PROXY_CARS_URL: http://ural-cars:10904/api
+      PROXY_CARGO_URL: http://ural-cargo:10905/api
+      PROXY_CONTRACTS_URL: http://ural-contracts:10906/api
+      PROXY_FILES_URL: http://ural-files:10907/api
+      PROXY_NOTIFICATIONS_URL: http://ural-notifications:10909/api
+      FRONT_URL: http://localhost:${FRONT_PORT:-3000}
+    depends_on:
+      ural-auth:
+        condition: service_healthy
+      ural-users:
+        condition: service_healthy
+      ural-cars:
+        condition: service_healthy
+      ural-cargo:
+        condition: service_healthy
+      ural-contracts:
+        condition: service_healthy
+      ural-files:
+        condition: service_healthy
+      ural-notifications:
+        condition: service_healthy
+      ural-ai:
+        condition: service_healthy
+    ports:
+      - "${AGGREGATOR_PORT:-10902}:10902"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:10902/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  ural-front:
+    image: ural-front:dev
+    container_name: ural-front
+    build:
+      context: ./ural-front
+      dockerfile: Dockerfile
+    environment:
+      API_BASE_URL: http://localhost:${AGGREGATOR_PORT:-10902}
+    depends_on:
+      ural-aggregator:
+        condition: service_healthy
+    ports:
+      - "${FRONT_PORT:-3000}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  ural-postgres-data:
+  ural-kafka-data:
+  ural-minio-data:

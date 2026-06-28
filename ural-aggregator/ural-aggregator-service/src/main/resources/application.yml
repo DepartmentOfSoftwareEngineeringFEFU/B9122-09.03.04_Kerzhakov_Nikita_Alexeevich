@@ -24,7 +24,7 @@ proxy:
   contracts:
     url: ${PROXY_CONTRACTS_URL}
   files:
-    url: ${PROXY_FILE_URL}
+    url: ${PROXY_FILES_URL}
 
 front:
   url: ${FRONT_URL}
